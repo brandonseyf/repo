@@ -3,10 +3,8 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import requests
-import os
 from datetime import datetime
 from io import StringIO
-from dotenv import load_dotenv
 
 # === CONFIG ===
 st.set_page_config(page_title="🚛 Press Dashboard", layout="wide")
@@ -16,8 +14,8 @@ st.title("🚛 Press Cycle Dashboard")
 client_id = st.secrets["onedrive"]["client_id"]
 tenant_id = st.secrets["onedrive"]["tenant_id"]
 client_secret = st.secrets["onedrive"]["client_secret"]
-site_domain = st.secrets["onedrive"]["sharepoint_site"]
 folder_path = st.secrets["onedrive"]["folder_path"]
+user_email = "brandon@presfab.ca"
 
 # === AUTH ===
 auth_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
@@ -36,29 +34,9 @@ if not access_token:
 
 headers = {"Authorization": f"Bearer {access_token}"}
 
-# === GET SITE ID ===
-personal_site_path = "presfab1986-my.sharepoint.com:/personal/brandon_presfab_ca:/"
-personal_site_path = "presfab1986-my.sharepoint.com:/personal/brandon_presfab_ca:/"
-site_resp = requests.get(f"https://graph.microsoft.com/v1.0/sites/{personal_site_path}", headers=headers)
-
-site_id = site_resp.json().get("id")
-
-if not site_id:
-    st.error("❌ Failed to get SharePoint Site ID!.")
-    st.stop()
-
-# === GET DRIVE ID ===
-drive_resp = requests.get(f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives", headers=headers)
-drives = drive_resp.json().get("value", [])
-drive_id = drives[0]["id"] if drives else None
-
-if not drive_id:
-    st.error("❌ Failed to get Drive ID.")
-    st.stop()
-
-# === LIST FILES IN FOLDER ===
-folder_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/{folder_path}:/children"
-folder_resp = requests.get(folder_url, headers=headers)
+# === LIST FILES IN Onedrive Root:/Press ===
+drive_url = f"https://graph.microsoft.com/v1.0/users/{user_email}/drive/root:/{folder_path}:/children"
+folder_resp = requests.get(drive_url, headers=headers)
 items = folder_resp.json().get("value", [])
 
 csv_files = [item for item in items if item["name"].endswith(".csv")]
@@ -66,7 +44,7 @@ if not csv_files:
     st.warning("📂 No CSV files found in OneDrive folder.")
     st.stop()
 
-# === LOAD ALL CSV FILES ===
+# === LOAD CSVs ===
 @st.cache_data
 def load_csv_files():
     dfs = []
