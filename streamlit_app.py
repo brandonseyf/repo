@@ -37,7 +37,9 @@ if not access_token:
 headers = {"Authorization": f"Bearer {access_token}"}
 
 # === GET SITE ID ===
-site_resp = requests.get(f"https://graph.microsoft.com/v1.0/sites/{site_domain}:/", headers=headers)
+personal_site_path = "presfab1986-my.sharepoint.com:/personal/brandon_presfab_ca:/"
+site_resp = requests.get(f"https://graph.microsoft.com/v1.0/sites/{personal_site_path}", headers=headers)
+
 site_id = site_resp.json().get("id")
 
 if not site_id:
