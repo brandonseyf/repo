@@ -38,6 +38,7 @@ headers = {"Authorization": f"Bearer {access_token}"}
 
 # === GET SITE ID ===
 personal_site_path = "presfab1986-my.sharepoint.com:/personal/brandon_presfab_ca:/"
+personal_site_path = "presfab1986-my.sharepoint.com:/personal/brandon_presfab_ca:/"
 site_resp = requests.get(f"https://graph.microsoft.com/v1.0/sites/{personal_site_path}", headers=headers)
 
 site_id = site_resp.json().get("id")
