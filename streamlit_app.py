@@ -44,7 +44,7 @@ site_resp = requests.get(f"https://graph.microsoft.com/v1.0/sites/{personal_site
 site_id = site_resp.json().get("id")
 
 if not site_id:
-    st.error("❌ Failed to get SharePoint Site ID.")
+    st.error("❌ Failed to get SharePoint Site ID!.")
     st.stop()
 
 # === GET DRIVE ID ===
