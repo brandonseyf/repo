@@ -34,12 +34,22 @@ if not access_token:
 
 headers = {"Authorization": f"Bearer {access_token}"}
 
-# === LIST FILES IN Onedrive Root:/Press ===
+# === LIST ROOT FOLDERS TO CONFIRM LOCATION ===
+st.subheader("📂 Checking OneDrive Root Contents")
+root_url = f"https://graph.microsoft.com/v1.0/users/{user_email}/drive/root/children"
+root_resp = requests.get(root_url, headers=headers)
+root_items = root_resp.json().get("value", [])
+
+folder_names = [item["name"] for item in root_items]
+st.write("📁 Root folders/files:")
+st.write(folder_names)
+
+# === TRY TO LIST FILES IN Press ===
 drive_url = f"https://graph.microsoft.com/v1.0/users/{user_email}/drive/root:/{folder_path}:/children"
 folder_resp = requests.get(drive_url, headers=headers)
 items = folder_resp.json().get("value", [])
 
-csv_files = [item for item in items if item["name"].endswith(".csv")]
+csv_files = [item for item in items if item["name"].lower().endswith(".csv")]
 if not csv_files:
     st.warning("📂 No CSV files found in OneDrive folder.")
     st.stop()
