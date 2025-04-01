@@ -147,7 +147,13 @@ for col in ['Épandage(secondes)', 'Cycle de presse(secondes)', 'Arrêt(secondes
 # === DATE RANGES & PRESETS ===
 min_date = df['DateOnly'].min()
 max_date = df['DateOnly'].max()
-today = datetime.today().date()
+
+from pytz import timezone
+
+eastern = timezone("US/Eastern")
+now_eastern = datetime.now(eastern)
+today = now_eastern.date()
+
 
 def get_date_range(option):
     if option == "Today": return today, today
