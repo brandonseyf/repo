@@ -7,9 +7,9 @@ from datetime import datetime
 from io import StringIO
 
 st.set_page_config(page_title="🚛 Press Dashboard", layout="wide")
-st.title("🚛 Press Cycle Dashboard!")
+st.title("🚛 Press Cycle Dashboard")
 
-# === SECRETS ===
+# === LOAD SECRETS ===
 client_id = st.secrets["onedrive"]["client_id"]
 tenant_id = st.secrets["onedrive"]["tenant_id"]
 client_secret = st.secrets["onedrive"]["client_secret"]
@@ -33,59 +33,53 @@ if not access_token:
 
 headers = {"Authorization": f"Bearer {access_token}"}
 
-# === DRIVE ID ===
+# === GET DRIVE ID ===
 drive_resp = requests.get(f"https://graph.microsoft.com/v1.0/users/{user_email}/drive", headers=headers)
 drive_id = drive_resp.json().get("id")
 if not drive_id:
     st.error("❌ Could not get user drive ID.")
     st.stop()
 
-# === FILE LISTING ===
-press_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/{folder_path}:/children"
-resp = requests.get(press_url, headers=headers)
-files = resp.json().get("value", [])
-csv_files = [f for f in files if f["name"].strip().lower().endswith(".csv")]
+# === LIST FILES IN FOLDER ===
+folder_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/{folder_path}:/children"
+resp = requests.get(folder_url, headers=headers)
+items = resp.json().get("value", [])
+csv_files = [item for item in items if item["name"].strip().lower().endswith(".csv")]
 
 if not csv_files:
     st.warning("📂 No CSV files found.")
     st.stop()
 
-# === LOAD CSVs SAFELY ===
-@st.cache_data
-def load_csv_files():
-    dfs = []
-    skipped = []
-    for file in csv_files:
-        download_url = file["@microsoft.graph.downloadUrl"]
-        try:
-            csv_resp = requests.get(download_url)
-            try:
-                df = pd.read_csv(StringIO(csv_resp.text))
-            except Exception:
-                try:
-                    df = pd.read_csv(StringIO(csv_resp.content.decode("ISO-8859-1")))
-                except Exception as e:
-                    skipped.append((file["name"], str(e)))
-                    continue
-            df["source_file"] = file["name"]
-            dfs.append(df)
-        except Exception as e:
-            skipped.append((file["name"], str(e)))
-    return dfs, skipped
+# === LOAD CSV FILES ===
+dfs = []
+skipped = []
+file_logs = []
 
-with st.spinner("📥 Loading files from OneDrive..."):
-    dfs, skipped = load_csv_files()
+for file in csv_files:
+    name = file["name"].strip()
+    url = file["@microsoft.graph.downloadUrl"]
+    try:
+        try:
+            df = pd.read_csv(StringIO(requests.get(url).text))
+        except:
+            df = pd.read_csv(StringIO(requests.get(url).content.decode("latin1")))
+        if "Date" not in df.columns or "Heure" not in df.columns:
+            skipped.append((name, "Missing Date or Heure"))
+            continue
+        df["source_file"] = name
+        dfs.append(df)
+        file_logs.append({"File": name, "Rows": len(df)})
+    except Exception as e:
+        skipped.append((name, str(e)))
 
 if not dfs:
     st.error("❌ No valid data loaded.")
     st.stop()
 
-# === COMBINE AND PROCESS ===
+# === COMBINE & CLEAN ===
 df = pd.concat(dfs, ignore_index=True)
 df['Timestamp'] = pd.to_datetime(df['Date'].astype(str) + ' ' + df['Heure'].astype(str), errors='coerce')
 df = df[df['Timestamp'].notna()]
-df = df[~((df['Timestamp'].dt.year == 2019) & (df['Timestamp'].dt.month == 11))]
-
 df['Hour'] = df['Timestamp'].dt.hour
 df['DateOnly'] = df['Timestamp'].dt.date
 df['DayName'] = df['Timestamp'].dt.day_name()
@@ -93,13 +87,20 @@ df['Machine'] = df['source_file'].str.extract(r'(Presse\d)', expand=False)
 df['Machine'] = df['Machine'].replace({'Presse1': '400', 'Presse2': '800'})
 df['AMPM'] = df['Hour'].apply(lambda h: 'AM' if h < 13 else 'PM')
 
-# === SAFELY CONVERT TO MINUTES ===
-expected_cols = ['Épandage(secondes)', 'Cycle de presse(secondes)', 'Arrêt(secondes)']
-for col in expected_cols:
+for col in ['Épandage(secondes)', 'Cycle de presse(secondes)', 'Arrêt(secondes)']:
     if col in df.columns:
         df[col] = pd.to_numeric(df[col], errors='coerce') / 60
 
-# === FILTERS ===
+# === LOG FILE STATS ===
+st.sidebar.subheader("📄 File Load Summary")
+if file_logs:
+    st.sidebar.dataframe(pd.DataFrame(file_logs))
+
+if skipped:
+    st.sidebar.subheader("⚠️ Skipped Files")
+    st.sidebar.dataframe(pd.DataFrame(skipped, columns=["File", "Error"]))
+
+# === FILTER UI ===
 min_date = df['Timestamp'].dt.date.min()
 max_date = df['Timestamp'].dt.date.max()
 default_start = max_date - pd.Timedelta(days=7)
@@ -148,25 +149,17 @@ st.subheader("📊 AM/PM Breakdown")
 filtered.loc[:, 'AMPM'] = pd.Categorical(filtered['AMPM'], categories=['AM', 'PM'], ordered=True)
 
 if (end_date - start_date).days <= 1:
-    grouped = filtered.groupby(['Hour', 'AMPM'], observed=False).size().reset_index(name='Cycles')
+    grouped = filtered.groupby(['Hour', 'AMPM']).size().reset_index(name='Cycles')
     fig = px.bar(grouped, x='Hour', y='Cycles', color='AMPM', barmode='stack')
 else:
-    grouped = filtered.groupby([filtered['Timestamp'].dt.date, 'AMPM'], observed=False).size().reset_index(name='Cycles')
+    grouped = filtered.groupby([filtered['Timestamp'].dt.date, 'AMPM']).size().reset_index(name='Cycles')
     grouped.columns = ['Date', 'AMPM', 'Cycles']
     fig = px.bar(grouped, x='Date', y='Cycles', color='AMPM', barmode='stack')
 
 st.plotly_chart(fig, use_container_width=True)
 
-# === RAW ===
 if show_raw:
     st.subheader("📄 Filtered Data")
     st.dataframe(filtered)
 
-# === EXPORT ===
 st.download_button("⬇️ Download Filtered CSV", filtered.to_csv(index=False), file_name="filtered_press_data.csv")
-
-# === SKIPPED FILES TABLE ===
-if skipped:
-    st.subheader("⚠️ Skipped Files")
-    skip_df = pd.DataFrame(skipped, columns=["File", "Error"])
-    st.dataframe(skip_df)
