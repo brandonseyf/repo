@@ -6,12 +6,12 @@ import requests
 import os
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import StringIO
 
 # === CONFIG ===
 st.set_page_config(page_title="🚛 Press Dashboard", layout="wide")
-st.markdown("""<h1 style='text-align: center;'>🚛 Press Cycle Dashboard</h1>""", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center;'>🚛 Press Cycle Dashboard</h1>", unsafe_allow_html=True)
 
 CACHE_DIR = ".streamlit_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -144,16 +144,33 @@ for col in ['Épandage(secondes)', 'Cycle de presse(secondes)', 'Arrêt(secondes
     if col in df.columns:
         df[col] = pd.to_numeric(df[col], errors='coerce') / 60
 
-# === DATE RANGES ===
+# === DATE RANGES & PRESETS ===
 min_date = df['DateOnly'].min()
 max_date = df['DateOnly'].max()
-default_start = max_date - pd.Timedelta(days=7)
+today = datetime.today().date()
+
+def get_date_range(option):
+    if option == "Today": return today, today
+    elif option == "Yesterday": return today - timedelta(days=1), today - timedelta(days=1)
+    elif option == "This Week": return today - timedelta(days=today.weekday()), today
+    elif option == "Last Week":
+        start = today - timedelta(days=today.weekday() + 7)
+        return start, start + timedelta(days=6)
+    elif option == "This Month": return today.replace(day=1), today
+    elif option == "Last Month":
+        first = today.replace(day=1)
+        last = first - timedelta(days=1)
+        return last.replace(day=1), last
+    elif option == "This Year": return today.replace(month=1, day=1), today
+    return min_date, max_date
 
 # === FILTERS ===
 with st.expander("🔍 Filters", expanded=True):
     col1, col2 = st.columns(2)
     with col1:
-        date_range = st.date_input("📅 Date Range", (default_start, max_date), min_value=min_date, max_value=max_date)
+        preset = st.selectbox("📆 Preset Date Range", ["Today", "Yesterday", "This Week", "Last Week", "This Month", "Last Month", "This Year", "Custom"], index=0)
+        default_start, default_end = get_date_range(preset) if preset != "Custom" else (min_date, max_date)
+        date_range = st.date_input("📅 Date Range", (default_start, default_end), min_value=min_date, max_value=max_date)
         shift_range = st.slider("🕐 Hour Range", 0, 23, (0, 23))
         machines = st.multiselect("🏭 Machines", ['400', '800'], default=['400', '800'])
     with col2:
@@ -161,6 +178,7 @@ with st.expander("🔍 Filters", expanded=True):
                               default=['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'])
         show_raw = st.checkbox("👁 Show Raw Table", value=False)
 
+# === APPLY FILTER ===
 start_date, end_date = date_range
 filtered = df[
     (df['DateOnly'] >= start_date) &
@@ -186,9 +204,9 @@ col1, col2, col3, col4 = st.columns(4)
 col1.metric("🧮 Total Cycles", f"{len(filtered):,}")
 col2.metric("⚡ Cycles/Hour", f"{len(filtered)/duration_hours:.1f}")
 col3.metric("🕐 Avg Prod Hrs/Day", f"{avg_prod:.1f}")
-col4.metric("⏱ Avg Cycle (min)", f"{filtered['Cycle de presse(secondes)'].mean():.1f}")
+col4.metric("⏱ Avg Cycle (min)", f"{filtered.get('Cycle de presse(secondes)', pd.Series()).mean():.1f}")
 
-# === CHARTS ===
+# === AM/PM CHART ===
 st.subheader("📊 AM/PM Breakdown (Stacked)")
 filtered['AMPM'] = pd.Categorical(filtered['AMPM'], categories=['AM', 'PM'], ordered=True)
 range_days = (end_date - start_date).days + 1
@@ -207,19 +225,13 @@ st.plotly_chart(fig, use_container_width=True)
 
 # === MACHINE TOTALS ===
 st.subheader("🏭 Totals by Machine")
-totals = filtered.groupby('Machine').agg({
-    'Cycle de presse(secondes)': 'sum',
-    'Épandage(secondes)': 'sum',
-    'Arrêt(secondes)': 'sum',
-    'Timestamp': 'count'
-}).rename(columns={
-    'Cycle de presse(secondes)': 'Total Press (min)',
-    'Épandage(secondes)': 'Total Spread (min)',
-    'Arrêt(secondes)': 'Total Downtime (min)',
-    'Timestamp': 'Total Cycles'
-}).reset_index()
-st.dataframe(totals)
+totals_cols = [c for c in ['Cycle de presse(secondes)', 'Épandage(secondes)', 'Arrêt(secondes)'] if c in filtered.columns]
+if totals_cols:
+    totals = filtered.groupby('Machine')[totals_cols].sum()
+    totals["Total Cycles"] = filtered.groupby('Machine').size()
+    st.dataframe(totals.reset_index())
 
+# === RAW EXPORT ===
 if show_raw:
     st.subheader("📄 Raw Data")
     st.dataframe(filtered)
