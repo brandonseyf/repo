@@ -5,11 +5,12 @@ import plotly.express as px
 import requests
 import os
 import json
+import re
 from datetime import datetime
 from io import StringIO
 
 st.set_page_config(page_title="🚛 Press Dashboard", layout="wide")
-st.title("🚛 Optimized Press Dashboard")
+st.title("🚛 Press Dashboard (Filename-Date Smart Reload)")
 
 # === CONFIG ===
 CACHE_DIR = ".streamlit_cache"
@@ -68,36 +69,45 @@ def save_index(index):
     with open(INDEX_FILE, "w") as f:
         json.dump(index, f)
 
-# === UNIQUE FILE HASH ===
+# === HASH ===
 def file_hash(metadata):
     return f"{metadata['size']}_{metadata['lastModifiedDateTime']}"
 
-# === PROCESS NEW OR CHANGED FILES + FORCE RECENT ===
+# === GET LATEST FILE PER MACHINE BY FILENAME DATE ===
+def get_latest_by_filename(files):
+    latest = {}
+    pattern = re.compile(r'(Presse\d).*?(\d{4}-\d{2}-\d{2})')
+    for f in files:
+        name = f["name"].strip()
+        match = pattern.search(name)
+        if match:
+            machine, datestr = match.groups()
+            try:
+                dt = datetime.strptime(datestr, "%Y-%m-%d").date()
+                if machine not in latest or dt > latest[machine][0]:
+                    latest[machine] = (dt, f)
+            except:
+                continue
+    return {k: v[1] for k, v in latest.items()}
+
+# === LOAD OR UPDATE DATA ===
 @st.cache_data(show_spinner=False)
 def update_data():
     files = get_all_files()
     csvs = [f for f in files if f["name"].strip().lower().endswith(".csv")]
-
     old_index = load_index()
     new_index = {}
     new_data = []
 
-    # Identify most recent per Presse1 and Presse2
-    most_recent = {"Presse1": None, "Presse2": None}
-    for f in csvs:
-        name = f["name"].strip()
-        if "Presse1" in name and (most_recent["Presse1"] is None or f["lastModifiedDateTime"] > most_recent["Presse1"]["lastModifiedDateTime"]):
-            most_recent["Presse1"] = f
-        if "Presse2" in name and (most_recent["Presse2"] is None or f["lastModifiedDateTime"] > most_recent["Presse2"]["lastModifiedDateTime"]):
-            most_recent["Presse2"] = f
+    latest_files = get_latest_by_filename(csvs)
+    force_files = [v["name"].strip() for v in latest_files.values()]
 
     for f in csvs:
         name = f["name"].strip()
         fid = f["id"]
         meta_hash = file_hash(f)
         new_index[name] = meta_hash
-
-        is_latest = (f == most_recent["Presse1"]) or (f == most_recent["Presse2"])
+        is_latest = name in force_files
         needs_update = name not in old_index or old_index[name] != meta_hash
 
         if needs_update or is_latest:
@@ -115,9 +125,7 @@ def update_data():
 
     if os.path.exists(DATA_FILE):
         base = pd.read_parquet(DATA_FILE)
-        # remove old rows for the most recent files
-        exclude_names = [f["name"].strip() for f in most_recent.values() if f]
-        base = base[~base["source_file"].isin(exclude_names)]
+        base = base[~base["source_file"].isin(force_files)]
         combined = pd.concat([base] + new_data, ignore_index=True)
     else:
         combined = pd.concat(new_data, ignore_index=True) if new_data else pd.DataFrame()
@@ -126,7 +134,7 @@ def update_data():
     save_index(new_index)
     return combined
 
-# === LOAD OR UPDATE ===
+# === LOAD DATA ===
 with st.spinner("📥 Loading press data..."):
     df = update_data()
 
@@ -193,7 +201,7 @@ col1.metric("🧮 Total Cycles", f"{total_cycles:,}")
 col2.metric("⚡ Cycles/Hour", f"{avg_per_hour:.1f}")
 col3.metric("⏱ Avg Cycle (min)", f"{avg_cycle:.1f}")
 
-# === CHART ===
+# === AM/PM CHART ===
 st.subheader("📊 AM/PM Breakdown")
 filtered['AMPM'] = pd.Categorical(filtered['AMPM'], categories=['AM', 'PM'], ordered=True)
 
