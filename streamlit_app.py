@@ -62,32 +62,43 @@ if not csv_files:
 @st.cache_data
 def load_csv_files():
     dfs = []
+    skipped_files = []
     for file in csv_files:
+        name = file["name"]
         download_url = file["@microsoft.graph.downloadUrl"]
-        csv_resp = requests.get(download_url)
-        if csv_resp.status_code == 200:
-            try:
-                df = pd.read_csv(StringIO(csv_resp.text))
-                df["source_file"] = file["name"]
-                dfs.append(df)
-            except Exception as e:
-                st.warning(f"⚠️ Could not read {file['name']}: {e}")
-    return pd.concat(dfs, ignore_index=True)
+        try:
+            csv_resp = requests.get(download_url)
+            df = pd.read_csv(StringIO(csv_resp.text))
+            if "Date" not in df.columns or "Heure" not in df.columns:
+                skipped_files.append(f"{name} (missing Date/Heure)")
+                continue
+            df["source_file"] = name
+            df["Timestamp"] = pd.to_datetime(df["Date"].astype(str) + " " + df["Heure"].astype(str), errors='coerce')
+            df = df[df["Timestamp"].notna()]
+            dfs.append(df)
+        except Exception as e:
+            skipped_files.append(f"{name} ({e})")
+    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame(), skipped_files
 
 with st.spinner("📥 Loading data from OneDrive..."):
-    df = load_csv_files()
+    df, skipped = load_csv_files()
+
+if not df.empty:
+    st.success(f"✅ Loaded {len(df)} rows from {df['source_file'].nunique()} files.")
+    st.write("🕓 Data covers:", df['Timestamp'].min().date(), "to", df['Timestamp'].max().date())
+    st.write("📁 Files used:", df['source_file'].unique().tolist())
+else:
+    st.warning("⚠️ No usable data loaded.")
+
+if skipped:
+    st.warning(f"⚠️ Skipped {len(skipped)} file(s):")
+    st.write(skipped)
 
 if df.empty:
-    st.warning("No valid data found.")
     st.stop()
-st.write("🕓 Date range in data:", df["Timestamp"].min(), "to", df["Timestamp"].max())
-st.write("📁 Loaded files:", df["source_file"].unique().tolist())
 
-# === CLEAN & PROCESS ===
-df['Timestamp'] = pd.to_datetime(df['Date'].astype(str) + ' ' + df['Heure'].astype(str), errors='coerce')
-df = df[df['Timestamp'].notna()]
+# === CONTINUE DASHBOARD ===
 df = df[~((df['Timestamp'].dt.year == 2019) & (df['Timestamp'].dt.month == 11))]
-
 df['Hour'] = df['Timestamp'].dt.hour
 df['DateOnly'] = df['Timestamp'].dt.date
 df['DayName'] = df['Timestamp'].dt.day_name()
@@ -98,19 +109,14 @@ df['AMPM'] = df['Hour'].apply(lambda h: 'AM' if h < 13 else 'PM')
 expected_cols = ['Épandage(secondes)', 'Cycle de presse(secondes)', 'Arrêt(secondes)']
 available_cols = [col for col in expected_cols if col in df.columns]
 
-if not available_cols:
-    st.error("❌ None of the expected data columns were found in the CSVs.")
-    st.stop()
-
 for col in available_cols:
     df[col] = pd.to_numeric(df[col], errors='coerce') / 60
-
 
 min_date = df['Timestamp'].dt.date.min()
 max_date = df['Timestamp'].dt.date.max()
 default_start = max_date - pd.Timedelta(days=7)
 
-# === FILTER UI ===
+# === FILTERS ===
 with st.expander("🔍 Filters", expanded=True):
     col1, col2 = st.columns(2)
     with col1:
@@ -143,7 +149,7 @@ duration_hours = (end_ts - start_ts).total_seconds() / 3600 if start_ts != end_t
 
 total_cycles = len(filtered)
 avg_per_hour = total_cycles / duration_hours
-avg_cycle = filtered['Cycle de presse(secondes)'].mean()
+avg_cycle = filtered['Cycle de presse(secondes)'].mean() if 'Cycle de presse(secondes)' in filtered else 0
 
 col1, col2, col3 = st.columns(3)
 col1.metric("🧮 Total Cycles", f"{total_cycles:,}")
@@ -164,10 +170,8 @@ else:
 
 st.plotly_chart(fig, use_container_width=True)
 
-# === RAW TABLE ===
 if show_raw:
     st.subheader("📄 Filtered Data")
     st.dataframe(filtered)
 
-# === EXPORT ===
 st.download_button("⬇️ Download Filtered CSV", filtered.to_csv(index=False), file_name="filtered_press_data.csv")
