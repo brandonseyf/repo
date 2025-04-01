@@ -11,7 +11,7 @@ from io import StringIO
 from pytz import timezone
 
 # === SETUP ===
-st.set_page_config(page_title="🚛 Press Dashboard", layout="wide")
+st.set_page_config(page_title="🚛 Press Dashboard!", layout="wide")
 st.markdown("<h1 style='text-align: center;'>🚛 Press Cycle Insights Dashboard!</h1>", unsafe_allow_html=True)
 st.markdown("---")
 
