@@ -51,7 +51,7 @@ if not csv_files:
     st.stop()
 
 # === LOAD CSVs SAFELY ===
- @st.cache_data
+@st.cache_data
 def load_csv_files():
     dfs = []
     skipped = []
