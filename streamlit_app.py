@@ -93,6 +93,7 @@ df['Machine'] = df['source_file'].str.extract(r'(Presse\d)', expand=False)
 df['Machine'] = df['Machine'].replace({'Presse1': '400', 'Presse2': '800'})
 df['AMPM'] = df['Hour'].apply(lambda h: 'AM' if h < 13 else 'PM')
 
+# === SAFELY CONVERT TO MINUTES ===
 expected_cols = ['Épandage(secondes)', 'Cycle de presse(secondes)', 'Arrêt(secondes)']
 for col in expected_cols:
     if col in df.columns:
@@ -147,10 +148,10 @@ st.subheader("📊 AM/PM Breakdown")
 filtered.loc[:, 'AMPM'] = pd.Categorical(filtered['AMPM'], categories=['AM', 'PM'], ordered=True)
 
 if (end_date - start_date).days <= 1:
-    grouped = filtered.groupby(['Hour', 'AMPM']).size().reset_index(name='Cycles')
+    grouped = filtered.groupby(['Hour', 'AMPM'], observed=False).size().reset_index(name='Cycles')
     fig = px.bar(grouped, x='Hour', y='Cycles', color='AMPM', barmode='stack')
 else:
-    grouped = filtered.groupby([filtered['Timestamp'].dt.date, 'AMPM']).size().reset_index(name='Cycles')
+    grouped = filtered.groupby([filtered['Timestamp'].dt.date, 'AMPM'], observed=False).size().reset_index(name='Cycles')
     grouped.columns = ['Date', 'AMPM', 'Cycles']
     fig = px.bar(grouped, x='Date', y='Cycles', color='AMPM', barmode='stack')
 
