@@ -8,7 +8,7 @@ from datetime import datetime
 from io import StringIO
 
 # === CONFIG ===
-st.set_page_config(page_title="🚛 Press Dashboard", layout="wide")
+st.set_page_config(page_title="🚛 Press Dashboard!", layout="wide")
 st.title("🚛 Press Cycle Dashboard (Smart Cache)")
 
 client_id = st.secrets["onedrive"]["client_id"]
