@@ -7,10 +7,9 @@ import os
 import json
 from datetime import datetime
 from io import StringIO
-from hashlib import md5
 
-st.set_page_config(page_title="🚛 Optimized Press Dashboard", layout="wide")
-st.title("🚛 Press Dashboard (OneDrive Optimized)")
+st.set_page_config(page_title="🚛 Press Dashboard", layout="wide")
+st.title("🚛 Optimized Press Dashboard")
 
 # === CONFIG ===
 CACHE_DIR = ".streamlit_cache"
@@ -57,37 +56,51 @@ def get_all_files():
         url = data.get("@odata.nextLink")
     return all_files
 
-# === LOAD FILE INDEX ===
+# === LOAD INDEX ===
 def load_index():
     if os.path.exists(INDEX_FILE):
         with open(INDEX_FILE, "r") as f:
             return json.load(f)
     return {}
 
-# === SAVE FILE INDEX ===
+# === SAVE INDEX ===
 def save_index(index):
     with open(INDEX_FILE, "w") as f:
         json.dump(index, f)
 
-# === HASH TO DETECT CHANGES ===
+# === UNIQUE FILE HASH ===
 def file_hash(metadata):
     return f"{metadata['size']}_{metadata['lastModifiedDateTime']}"
 
-# === PROCESS NEW OR CHANGED FILES ===
+# === PROCESS NEW OR CHANGED FILES + FORCE RECENT ===
 @st.cache_data(show_spinner=False)
 def update_data():
     files = get_all_files()
     csvs = [f for f in files if f["name"].strip().lower().endswith(".csv")]
+
     old_index = load_index()
     new_index = {}
     new_data = []
 
+    # Identify most recent per Presse1 and Presse2
+    most_recent = {"Presse1": None, "Presse2": None}
     for f in csvs:
-        fname = f["name"].strip()
+        name = f["name"].strip()
+        if "Presse1" in name and (most_recent["Presse1"] is None or f["lastModifiedDateTime"] > most_recent["Presse1"]["lastModifiedDateTime"]):
+            most_recent["Presse1"] = f
+        if "Presse2" in name and (most_recent["Presse2"] is None or f["lastModifiedDateTime"] > most_recent["Presse2"]["lastModifiedDateTime"]):
+            most_recent["Presse2"] = f
+
+    for f in csvs:
+        name = f["name"].strip()
         fid = f["id"]
         meta_hash = file_hash(f)
-        new_index[fname] = meta_hash
-        if fname not in old_index or old_index[fname] != meta_hash:
+        new_index[name] = meta_hash
+
+        is_latest = (f == most_recent["Presse1"]) or (f == most_recent["Presse2"])
+        needs_update = name not in old_index or old_index[name] != meta_hash
+
+        if needs_update or is_latest:
             download_url = f["@microsoft.graph.downloadUrl"]
             try:
                 try:
@@ -95,13 +108,16 @@ def update_data():
                 except:
                     df = pd.read_csv(StringIO(requests.get(download_url).content.decode("latin1")))
                 if "Date" in df.columns and "Heure" in df.columns:
-                    df["source_file"] = fname
+                    df["source_file"] = name
                     new_data.append(df)
             except Exception as e:
-                print(f"Failed to load {fname}: {e}")
+                print(f"Failed to load {name}: {e}")
 
     if os.path.exists(DATA_FILE):
         base = pd.read_parquet(DATA_FILE)
+        # remove old rows for the most recent files
+        exclude_names = [f["name"].strip() for f in most_recent.values() if f]
+        base = base[~base["source_file"].isin(exclude_names)]
         combined = pd.concat([base] + new_data, ignore_index=True)
     else:
         combined = pd.concat(new_data, ignore_index=True) if new_data else pd.DataFrame()
@@ -110,8 +126,8 @@ def update_data():
     save_index(new_index)
     return combined
 
-# === LOAD OR UPDATE DATA ===
-with st.spinner("📥 Loading & caching press data..."):
+# === LOAD OR UPDATE ===
+with st.spinner("📥 Loading press data..."):
     df = update_data()
 
 if df.empty:
@@ -133,7 +149,7 @@ for col in ['Épandage(secondes)', 'Cycle de presse(secondes)', 'Arrêt(secondes
     if col in df.columns:
         df[col] = pd.to_numeric(df[col], errors='coerce') / 60
 
-# === UI ===
+# === FILTERS ===
 min_date = df['Timestamp'].dt.date.min()
 max_date = df['Timestamp'].dt.date.max()
 default_start = max_date - pd.Timedelta(days=7)
