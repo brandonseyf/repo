@@ -82,7 +82,7 @@ for f in files:
             df["source_file"] = f["name"]
             combined.append(df)
         except:
-    continue
+            continue
 
 
         try:
@@ -93,7 +93,7 @@ for f in files:
             df["source_file"] = f["name"]
             combined.append(df)
         except:
-    continue
+            continue
 
     if not combined:
     return pd.DataFrame()
