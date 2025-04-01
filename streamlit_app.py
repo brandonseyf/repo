@@ -7,7 +7,10 @@ from datetime import datetime, timedelta
 from io import StringIO
 
 st.set_page_config(page_title="🚛 Press Dashboard", layout="wide")
-st.image("Logo.png", width=200)
+try:
+    st.image("Logo.png", width=200)
+except Exception:
+    st.info("ℹ️ Logo not found, continuing without it.")
 st.title("🚛 Press Cycle Dashboard")
 
 # === LOAD SECRETS ===
