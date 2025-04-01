@@ -165,8 +165,8 @@ if show_raw:
 # === EXPORT ===
 st.download_button("⬇️ Download Filtered CSV", filtered.to_csv(index=False), file_name="filtered_press_data.csv")
 
-# === SKIPPED FILES LOG ===
+# === SKIPPED FILES TABLE ===
 if skipped:
     st.subheader("⚠️ Skipped Files")
-    for name, error in skipped:
-        st.warning(f"{name}: {error}")
+    skip_df = pd.DataFrame(skipped, columns=["File", "Error"])
+    st.dataframe(skip_df)
