@@ -9,10 +9,10 @@ import re
 from datetime import datetime
 from io import StringIO
 
-st.set_page_config(page_title="🚛 Press Dashboard", layout="wide")
-st.title("🚛 Press Dashboard (Filename-Date Smart Reload)")
-
 # === CONFIG ===
+st.set_page_config(page_title="🚛 Press Dashboard", layout="wide")
+st.markdown("""<h1 style='text-align: center;'>🚛 Press Cycle Dashboard</h1>""", unsafe_allow_html=True)
+
 CACHE_DIR = ".streamlit_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 INDEX_FILE = os.path.join(CACHE_DIR, "file_index.json")
@@ -37,13 +37,9 @@ def get_access_token():
     return r.json().get("access_token")
 
 token = get_access_token()
-if not token:
-    st.error("❌ Failed to authenticate with Microsoft Graph.")
-    st.stop()
+headers = {"Authorization": f"Bearer {token}"} if token else {}
 
-headers = {"Authorization": f"Bearer {token}"}
-
-# === PAGINATED FILE FETCH ===
+# === FETCH FILES ===
 @st.cache_data(show_spinner=False)
 def get_all_files():
     url = f"https://graph.microsoft.com/v1.0/users/{user_email}/drive/root:/{folder_path}:/children"
@@ -57,31 +53,26 @@ def get_all_files():
         url = data.get("@odata.nextLink")
     return all_files
 
-# === LOAD INDEX ===
 def load_index():
     if os.path.exists(INDEX_FILE):
-        with open(INDEX_FILE, "r") as f:
+        with open(INDEX_FILE) as f:
             return json.load(f)
     return {}
 
-# === SAVE INDEX ===
 def save_index(index):
     with open(INDEX_FILE, "w") as f:
         json.dump(index, f)
 
-# === HASH ===
-def file_hash(metadata):
-    return f"{metadata['size']}_{metadata['lastModifiedDateTime']}"
+def file_hash(f): return f"{f['size']}_{f['lastModifiedDateTime']}"
 
-# === GET LATEST FILE PER MACHINE BY FILENAME DATE ===
-def get_latest_by_filename(files):
+def latest_per_machine(files):
     latest = {}
     pattern = re.compile(r'(Presse\d).*?(\d{4}-\d{2}-\d{2})')
     for f in files:
         name = f["name"].strip()
-        match = pattern.search(name)
-        if match:
-            machine, datestr = match.groups()
+        m = pattern.search(name)
+        if m:
+            machine, datestr = m.groups()
             try:
                 dt = datetime.strptime(datestr, "%Y-%m-%d").date()
                 if machine not in latest or dt > latest[machine][0]:
@@ -90,42 +81,39 @@ def get_latest_by_filename(files):
                 continue
     return {k: v[1] for k, v in latest.items()}
 
-# === LOAD OR UPDATE DATA ===
-@st.cache_data(show_spinner=False)
-def update_data():
+@st.cache_data(show_spinner=True)
+def fetch_data():
     files = get_all_files()
-    csvs = [f for f in files if f["name"].strip().lower().endswith(".csv")]
+    csvs = [f for f in files if f["name"].lower().strip().endswith(".csv")]
+    latest_files = latest_per_machine(csvs)
     old_index = load_index()
     new_index = {}
     new_data = []
 
-    latest_files = get_latest_by_filename(csvs)
-    force_files = [v["name"].strip() for v in latest_files.values()]
+    force_names = [v["name"].strip() for v in latest_files.values()]
 
     for f in csvs:
         name = f["name"].strip()
-        fid = f["id"]
-        meta_hash = file_hash(f)
-        new_index[name] = meta_hash
-        is_latest = name in force_files
-        needs_update = name not in old_index or old_index[name] != meta_hash
+        new_index[name] = file_hash(f)
+        is_latest = name in force_names
+        changed = name not in old_index or file_hash(f) != old_index[name]
 
-        if needs_update or is_latest:
-            download_url = f["@microsoft.graph.downloadUrl"]
+        if changed or is_latest:
             try:
+                url = f["@microsoft.graph.downloadUrl"]
                 try:
-                    df = pd.read_csv(StringIO(requests.get(download_url).text))
+                    df = pd.read_csv(StringIO(requests.get(url).text))
                 except:
-                    df = pd.read_csv(StringIO(requests.get(download_url).content.decode("latin1")))
+                    df = pd.read_csv(StringIO(requests.get(url).content.decode("latin1")))
                 if "Date" in df.columns and "Heure" in df.columns:
                     df["source_file"] = name
                     new_data.append(df)
-            except Exception as e:
-                print(f"Failed to load {name}: {e}")
+            except:
+                continue
 
     if os.path.exists(DATA_FILE):
         base = pd.read_parquet(DATA_FILE)
-        base = base[~base["source_file"].isin(force_files)]
+        base = base[~base["source_file"].isin(force_names)]
         combined = pd.concat([base] + new_data, ignore_index=True)
     else:
         combined = pd.concat(new_data, ignore_index=True) if new_data else pd.DataFrame()
@@ -135,33 +123,33 @@ def update_data():
     return combined
 
 # === LOAD DATA ===
-with st.spinner("📥 Loading press data..."):
-    df = update_data()
+with st.spinner("📥 Loading data from OneDrive..."):
+    df = fetch_data()
 
 if df.empty:
-    st.warning("⚠️ No valid data loaded.")
+    st.error("No data found.")
     st.stop()
 
-# === CLEANING ===
-df['Timestamp'] = pd.to_datetime(df['Date'].astype(str) + ' ' + df['Heure'].astype(str), errors='coerce')
+# === CLEAN ===
+df['Timestamp'] = pd.to_datetime(df['Date'] + " " + df['Heure'], errors='coerce')
 df = df[df['Timestamp'].notna()]
 df = df[~((df['Timestamp'].dt.year == 2019) & (df['Timestamp'].dt.month == 11))]
 df['Hour'] = df['Timestamp'].dt.hour
 df['DateOnly'] = df['Timestamp'].dt.date
 df['DayName'] = df['Timestamp'].dt.day_name()
-df['Machine'] = df['source_file'].str.extract(r'(Presse\d)', expand=False)
-df['Machine'] = df['Machine'].replace({'Presse1': '400', 'Presse2': '800'})
+df['Machine'] = df['source_file'].str.extract(r'(Presse\d)', expand=False).replace({'Presse1': '400', 'Presse2': '800'})
 df['AMPM'] = df['Hour'].apply(lambda h: 'AM' if h < 13 else 'PM')
 
 for col in ['Épandage(secondes)', 'Cycle de presse(secondes)', 'Arrêt(secondes)']:
     if col in df.columns:
         df[col] = pd.to_numeric(df[col], errors='coerce') / 60
 
-# === FILTERS ===
-min_date = df['Timestamp'].dt.date.min()
-max_date = df['Timestamp'].dt.date.max()
+# === DATE RANGES ===
+min_date = df['DateOnly'].min()
+max_date = df['DateOnly'].max()
 default_start = max_date - pd.Timedelta(days=7)
 
+# === FILTERS ===
 with st.expander("🔍 Filters", expanded=True):
     col1, col2 = st.columns(2)
     with col1:
@@ -175,8 +163,8 @@ with st.expander("🔍 Filters", expanded=True):
 
 start_date, end_date = date_range
 filtered = df[
-    (df['Timestamp'].dt.date >= start_date) &
-    (df['Timestamp'].dt.date <= end_date) &
+    (df['DateOnly'] >= start_date) &
+    (df['DateOnly'] <= end_date) &
     (df['Hour'].between(*shift_range)) &
     (df['Machine'].isin(machines)) &
     (df['DayName'].isin(days))
@@ -191,27 +179,49 @@ if filtered.empty:
 start_ts = filtered['Timestamp'].min()
 end_ts = filtered['Timestamp'].max()
 duration_hours = (end_ts - start_ts).total_seconds() / 3600 if start_ts != end_ts else 1
+prod_hours = filtered.groupby('DateOnly')['Timestamp'].agg(lambda x: (x.max() - x.min()).total_seconds() / 3600)
+avg_prod = prod_hours.mean()
 
-total_cycles = len(filtered)
-avg_per_hour = total_cycles / duration_hours
-avg_cycle = filtered['Cycle de presse(secondes)'].mean() if 'Cycle de presse(secondes)' in filtered.columns else 0
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("🧮 Total Cycles", f"{len(filtered):,}")
+col2.metric("⚡ Cycles/Hour", f"{len(filtered)/duration_hours:.1f}")
+col3.metric("🕐 Avg Prod Hrs/Day", f"{avg_prod:.1f}")
+col4.metric("⏱ Avg Cycle (min)", f"{filtered['Cycle de presse(secondes)'].mean():.1f}")
 
-col1, col2, col3 = st.columns(3)
-col1.metric("🧮 Total Cycles", f"{total_cycles:,}")
-col2.metric("⚡ Cycles/Hour", f"{avg_per_hour:.1f}")
-col3.metric("⏱ Avg Cycle (min)", f"{avg_cycle:.1f}")
-
-# === AM/PM CHART ===
-st.subheader("📊 AM/PM Breakdown")
+# === CHARTS ===
+st.subheader("📊 AM/PM Breakdown (Stacked)")
 filtered['AMPM'] = pd.Categorical(filtered['AMPM'], categories=['AM', 'PM'], ordered=True)
+range_days = (end_date - start_date).days + 1
 
-grouped = filtered.groupby([filtered['Timestamp'].dt.date, 'AMPM']).size().reset_index(name='Cycles')
-grouped.columns = ['Date', 'AMPM', 'Cycles']
-fig = px.bar(grouped, x='Date', y='Cycles', color='AMPM', barmode='stack')
+if range_days == 1:
+    grouped = filtered.groupby(['Hour', 'AMPM']).size().reset_index(name='Cycles')
+    fig = px.bar(grouped, x='Hour', y='Cycles', color='AMPM', barmode='stack')
+elif range_days <= 31:
+    grouped = filtered.groupby(['DateOnly', 'AMPM']).size().reset_index(name='Cycles')
+    fig = px.bar(grouped, x='DateOnly', y='Cycles', color='AMPM', barmode='stack')
+else:
+    filtered['Month'] = filtered['Timestamp'].dt.to_period('M').astype(str)
+    grouped = filtered.groupby(['Month', 'AMPM']).size().reset_index(name='Cycles')
+    fig = px.bar(grouped, x='Month', y='Cycles', color='AMPM', barmode='stack')
 st.plotly_chart(fig, use_container_width=True)
 
+# === MACHINE TOTALS ===
+st.subheader("🏭 Totals by Machine")
+totals = filtered.groupby('Machine').agg({
+    'Cycle de presse(secondes)': 'sum',
+    'Épandage(secondes)': 'sum',
+    'Arrêt(secondes)': 'sum',
+    'Timestamp': 'count'
+}).rename(columns={
+    'Cycle de presse(secondes)': 'Total Press (min)',
+    'Épandage(secondes)': 'Total Spread (min)',
+    'Arrêt(secondes)': 'Total Downtime (min)',
+    'Timestamp': 'Total Cycles'
+}).reset_index()
+st.dataframe(totals)
+
 if show_raw:
-    st.subheader("📄 Filtered Data")
+    st.subheader("📄 Raw Data")
     st.dataframe(filtered)
 
 st.download_button("⬇️ Download Filtered CSV", filtered.to_csv(index=False), file_name="filtered_press_data.csv")
