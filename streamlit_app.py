@@ -34,18 +34,33 @@ if not access_token:
 
 headers = {"Authorization": f"Bearer {access_token}"}
 
-# === RECURSIVE SEARCH FOR CSV FILES ===
-st.write("🔍 Searching for CSV files in /Press (including subfolders)...")
-search_url = f"https://graph.microsoft.com/v1.0/users/{user_email}/drive/root:/{folder_path}:/search(q='.csv')"
-search_resp = requests.get(search_url, headers=headers)
-items = search_resp.json().get("value", [])
+# === MANUAL RECURSIVE CSV COLLECTION ===
+def list_csv_files_recursively(folder_path):
+    csv_files = []
 
-# === SHOW FILES FOUND ===
-all_file_names = [item["name"] for item in items]
-st.write("📄 Found files:")
+    def traverse(path):
+        url = f"https://graph.microsoft.com/v1.0/users/{user_email}/drive/root:/{path}:/children"
+        resp = requests.get(url, headers=headers)
+        if resp.status_code != 200:
+            return
+        items = resp.json().get("value", [])
+        for item in items:
+            name = item["name"]
+            if item["folder"] if "folder" in item else False:
+                traverse(f"{path}/{name}")
+            elif name.strip().lower().endswith(".csv"):
+                csv_files.append(item)
+
+    traverse(folder_path)
+    return csv_files
+
+with st.spinner("🔍 Recursively loading CSVs from OneDrive /Press..."):
+    csv_files = list_csv_files_recursively(folder_path)
+
+all_file_names = [f["name"] for f in csv_files]
+st.write("📄 Found CSV files:")
 st.write(all_file_names)
 
-csv_files = [item for item in items if item["name"].strip().lower().endswith(".csv")]
 if not csv_files:
     st.warning("📂 No CSV files found in OneDrive folder.")
     st.stop()
@@ -66,7 +81,7 @@ def load_csv_files():
                 st.warning(f"⚠️ Failed to read {file['name']}: {e}")
     return pd.concat(dfs, ignore_index=True)
 
-with st.spinner("📥 Loading data from OneDrive..."):
+with st.spinner("📥 Parsing and combining CSVs..."):
     df = load_csv_files()
 
 if df.empty:
