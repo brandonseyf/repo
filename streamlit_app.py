@@ -93,8 +93,16 @@ df['Machine'] = df['source_file'].str.extract(r'(Presse\d)', expand=False)
 df['Machine'] = df['Machine'].replace({'Presse1': '400', 'Presse2': '800'})
 df['AMPM'] = df['Hour'].apply(lambda h: 'AM' if h < 13 else 'PM')
 
-for col in ['Épandage(secondes)', 'Cycle de presse(secondes)', 'Arrêt(secondes)']:
+expected_cols = ['Épandage(secondes)', 'Cycle de presse(secondes)', 'Arrêt(secondes)']
+available_cols = [col for col in expected_cols if col in df.columns]
+
+if not available_cols:
+    st.error("❌ None of the expected data columns were found in the CSVs.")
+    st.stop()
+
+for col in available_cols:
     df[col] = pd.to_numeric(df[col], errors='coerce') / 60
+
 
 min_date = df['Timestamp'].dt.date.min()
 max_date = df['Timestamp'].dt.date.max()
