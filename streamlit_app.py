@@ -61,8 +61,12 @@ def load_csv_files():
             csv_resp = requests.get(download_url)
             try:
                 df = pd.read_csv(StringIO(csv_resp.text))
-            except UnicodeDecodeError:
-                df = pd.read_csv(StringIO(csv_resp.content.decode("ISO-8859-1")))
+            except Exception:
+                try:
+                    df = pd.read_csv(StringIO(csv_resp.content.decode("ISO-8859-1")))
+                except Exception as e:
+                    skipped.append((file["name"], str(e)))
+                    continue
             df["source_file"] = file["name"]
             dfs.append(df)
         except Exception as e:
@@ -89,16 +93,10 @@ df['Machine'] = df['source_file'].str.extract(r'(Presse\d)', expand=False)
 df['Machine'] = df['Machine'].replace({'Presse1': '400', 'Presse2': '800'})
 df['AMPM'] = df['Hour'].apply(lambda h: 'AM' if h < 13 else 'PM')
 
-# === SAFELY CONVERT COLUMNS TO MINUTES ===
 expected_cols = ['Épandage(secondes)', 'Cycle de presse(secondes)', 'Arrêt(secondes)']
-available_cols = [col for col in expected_cols if col in df.columns]
-
-if not available_cols:
-    st.error("❌ None of the expected columns found.")
-    st.stop()
-
-for col in available_cols:
-    df[col] = pd.to_numeric(df[col], errors='coerce') / 60
+for col in expected_cols:
+    if col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors='coerce') / 60
 
 # === FILTERS ===
 min_date = df['Timestamp'].dt.date.min()
@@ -146,7 +144,7 @@ col3.metric("⏱ Avg Cycle (min)", f"{avg_cycle:.1f}")
 
 # === CHART ===
 st.subheader("📊 AM/PM Breakdown")
-filtered['AMPM'] = pd.Categorical(filtered['AMPM'], categories=['AM', 'PM'], ordered=True)
+filtered.loc[:, 'AMPM'] = pd.Categorical(filtered['AMPM'], categories=['AM', 'PM'], ordered=True)
 
 if (end_date - start_date).days <= 1:
     grouped = filtered.groupby(['Hour', 'AMPM']).size().reset_index(name='Cycles')
