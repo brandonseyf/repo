@@ -8,10 +8,12 @@ import json
 import re
 from datetime import datetime, timedelta
 from io import StringIO
+from pytz import timezone
 
-# === CONFIG ===
+# === SETUP ===
 st.set_page_config(page_title="🚛 Press Dashboard", layout="wide")
-st.markdown("<h1 style='text-align: center;'>🚛 Press Cycle Dashboard</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center;'>🚛 Press Cycle Insights Dashboard</h1>", unsafe_allow_html=True)
+st.markdown("---")
 
 CACHE_DIR = ".streamlit_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -24,7 +26,6 @@ client_secret = st.secrets["onedrive"]["client_secret"]
 user_email = "brandon@presfab.ca"
 folder_path = "Press"
 
-# === AUTH ===
 def get_access_token():
     url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
     data = {
@@ -39,8 +40,6 @@ def get_access_token():
 token = get_access_token()
 headers = {"Authorization": f"Bearer {token}"} if token else {}
 
-# === FETCH FILES ===
-@st.cache_data(show_spinner=False)
 def get_all_files():
     url = f"https://graph.microsoft.com/v1.0/users/{user_email}/drive/root:/{folder_path}:/children"
     all_files = []
@@ -122,7 +121,6 @@ def fetch_data():
     save_index(new_index)
     return combined
 
-# === LOAD DATA ===
 with st.spinner("📥 Loading data from OneDrive..."):
     df = fetch_data()
 
@@ -139,29 +137,24 @@ df['DateOnly'] = df['Timestamp'].dt.date
 df['DayName'] = df['Timestamp'].dt.day_name()
 df['Machine'] = df['source_file'].str.extract(r'(Presse\d)', expand=False).replace({'Presse1': '400', 'Presse2': '800'})
 df['AMPM'] = df['Hour'].apply(lambda h: 'AM' if h < 13 else 'PM')
+df['Month'] = df['Timestamp'].dt.to_period('M').astype(str)
 
 for col in ['Épandage(secondes)', 'Cycle de presse(secondes)', 'Arrêt(secondes)']:
     if col in df.columns:
         df[col] = pd.to_numeric(df[col], errors='coerce') / 60
 
-# === DATE RANGES & PRESETS ===
+# === TIMEZONE ===
+eastern = timezone("US/Eastern")
+today = datetime.now(eastern).date()
+
 min_date = df['DateOnly'].min()
 max_date = df['DateOnly'].max()
-
-from pytz import timezone
-
-eastern = timezone("US/Eastern")
-now_eastern = datetime.now(eastern)
-today = now_eastern.date()
-
 
 def get_date_range(option):
     if option == "Today": return today, today
     elif option == "Yesterday": return today - timedelta(days=1), today - timedelta(days=1)
     elif option == "This Week": return today - timedelta(days=today.weekday()), today
-    elif option == "Last Week":
-        start = today - timedelta(days=today.weekday() + 7)
-        return start, start + timedelta(days=6)
+    elif option == "Last Week": return today - timedelta(days=today.weekday() + 7), today - timedelta(days=today.weekday() + 1)
     elif option == "This Month": return today.replace(day=1), today
     elif option == "Last Month":
         first = today.replace(day=1)
@@ -171,20 +164,16 @@ def get_date_range(option):
     return min_date, max_date
 
 # === FILTERS ===
-with st.expander("🔍 Filters", expanded=True):
-    col1, col2 = st.columns(2)
-    with col1:
-        preset = st.selectbox("📆 Preset Date Range", ["Today", "Yesterday", "This Week", "Last Week", "This Month", "Last Month", "This Year", "Custom"], index=0)
-        default_start, default_end = get_date_range(preset) if preset != "Custom" else (min_date, max_date)
-        date_range = st.date_input("📅 Date Range", (default_start, default_end), min_value=min_date, max_value=max_date)
-        shift_range = st.slider("🕐 Hour Range", 0, 23, (0, 23))
-        machines = st.multiselect("🏭 Machines", ['400', '800'], default=['400', '800'])
-    with col2:
-        days = st.multiselect("📆 Days", ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'],
-                              default=['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'])
-        show_raw = st.checkbox("👁 Show Raw Table", value=False)
+with st.sidebar:
+    st.header("🔍 Filters")
+    preset = st.selectbox("Preset Date Range", ["Today", "Yesterday", "This Week", "Last Week", "This Month", "Last Month", "This Year", "Custom"], index=0)
+    default_start, default_end = get_date_range(preset) if preset != "Custom" else (min_date, max_date)
+    date_range = st.date_input("📅 Date Range", (default_start, default_end), min_value=min_date, max_value=max_date)
+    shift_range = st.slider("🕐 Hour Range", 0, 23, (0, 23))
+    machines = st.multiselect("🏭 Machines", ['400', '800'], default=['400', '800'])
+    days = st.multiselect("📆 Days", ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'],
+                          default=['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'])
 
-# === APPLY FILTER ===
 start_date, end_date = date_range
 filtered = df[
     (df['DateOnly'] >= start_date) &
@@ -194,7 +183,8 @@ filtered = df[
     (df['DayName'].isin(days))
 ]
 
-st.markdown(f"### ✅ {len(filtered)} Cycles from {start_date} to {end_date}")
+st.markdown(f"### ✅ Showing {len(filtered):,} Cycles from {start_date} to {end_date}")
+
 if filtered.empty:
     st.warning("⚠️ No data matches filters.")
     st.stop()
@@ -203,43 +193,47 @@ if filtered.empty:
 start_ts = filtered['Timestamp'].min()
 end_ts = filtered['Timestamp'].max()
 duration_hours = (end_ts - start_ts).total_seconds() / 3600 if start_ts != end_ts else 1
+
+total_cycles = len(filtered)
+avg_per_hour = total_cycles / duration_hours
+avg_cycle = filtered.get('Cycle de presse(secondes)', pd.Series()).mean()
+avg_spread = filtered.get('Épandage(secondes)', pd.Series()).mean()
+avg_down = filtered.get('Arrêt(secondes)', pd.Series()).mean()
 prod_hours = filtered.groupby('DateOnly')['Timestamp'].agg(lambda x: (x.max() - x.min()).total_seconds() / 3600)
 avg_prod = prod_hours.mean()
 
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("🧮 Total Cycles", f"{len(filtered):,}")
-col2.metric("⚡ Cycles/Hour", f"{len(filtered)/duration_hours:.1f}")
-col3.metric("🕐 Avg Prod Hrs/Day", f"{avg_prod:.1f}")
-col4.metric("⏱ Avg Cycle (min)", f"{filtered.get('Cycle de presse(secondes)', pd.Series()).mean():.1f}")
+st.markdown("### 📊 Key Performance Metrics")
+k1, k2, k3, k4 = st.columns(4)
+k1.metric("🧮 Total Cycles", f"{total_cycles:,}")
+k2.metric("⚡ Cycles per Hour", f"{avg_per_hour:.1f}")
+k3.metric("🕐 Avg Prod Hours/Day", f"{avg_prod:.1f}")
+k4.metric("⏱ Avg Cycle (min)", f"{avg_cycle:.1f}")
 
-# === AM/PM CHART ===
-st.subheader("📊 AM/PM Breakdown (Stacked)")
-filtered['AMPM'] = pd.Categorical(filtered['AMPM'], categories=['AM', 'PM'], ordered=True)
-range_days = (end_date - start_date).days + 1
+# === INSIGHT CHARTS ===
+st.markdown("---")
+st.subheader("📈 Insights")
 
-if range_days == 1:
-    grouped = filtered.groupby(['Hour', 'AMPM']).size().reset_index(name='Cycles')
-    fig = px.bar(grouped, x='Hour', y='Cycles', color='AMPM', barmode='stack')
-elif range_days <= 31:
-    grouped = filtered.groupby(['DateOnly', 'AMPM']).size().reset_index(name='Cycles')
-    fig = px.bar(grouped, x='DateOnly', y='Cycles', color='AMPM', barmode='stack')
-else:
-    filtered['Month'] = filtered['Timestamp'].dt.to_period('M').astype(str)
-    grouped = filtered.groupby(['Month', 'AMPM']).size().reset_index(name='Cycles')
-    fig = px.bar(grouped, x='Month', y='Cycles', color='AMPM', barmode='stack')
-st.plotly_chart(fig, use_container_width=True)
+c1, c2 = st.columns(2)
+with c1:
+    dow = filtered['DayName'].value_counts().reindex(
+        ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']
+    ).fillna(0).reset_index()
+    dow.columns = ['Day', 'Cycles']
+    fig1 = px.bar(dow, x='Day', y='Cycles', title="Busiest Days of Week")
+    st.plotly_chart(fig1, use_container_width=True)
 
-# === MACHINE TOTALS ===
-st.subheader("🏭 Totals by Machine")
+with c2:
+    hourly = filtered['Hour'].value_counts().sort_index().reset_index()
+    hourly.columns = ['Hour', 'Cycles']
+    fig2 = px.bar(hourly, x='Hour', y='Cycles', title="Busiest Hours of Day")
+    st.plotly_chart(fig2, use_container_width=True)
+
+# === MACHINE STATS ===
+st.subheader("🏭 Machine Breakdown")
 totals_cols = [c for c in ['Cycle de presse(secondes)', 'Épandage(secondes)', 'Arrêt(secondes)'] if c in filtered.columns]
 if totals_cols:
-    totals = filtered.groupby('Machine')[totals_cols].sum()
-    totals["Total Cycles"] = filtered.groupby('Machine').size()
-    st.dataframe(totals.reset_index())
+    machine_totals = filtered.groupby('Machine')[totals_cols].agg(['sum', 'mean'])
+    st.dataframe(machine_totals)
 
-# === RAW EXPORT ===
-if show_raw:
-    st.subheader("📄 Raw Data")
-    st.dataframe(filtered)
-
-st.download_button("⬇️ Download Filtered CSV", filtered.to_csv(index=False), file_name="filtered_press_data.csv")
+# === EXPORT ===
+st.download_button("⬇️ Download CSV", filtered.to_csv(index=False), file_name="filtered_press_data.csv")
