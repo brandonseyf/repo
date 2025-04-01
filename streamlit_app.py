@@ -82,7 +82,7 @@ for f in files:
             df["source_file"] = f["name"]
             combined.append(df)
         except:
-            continue
+    continue
 
 
         try:
@@ -93,10 +93,10 @@ for f in files:
             df["source_file"] = f["name"]
             combined.append(df)
         except:
-            continue
+    continue
 
     if not combined:
-        return pd.DataFrame()
+    return pd.DataFrame()
 
     df = pd.concat(combined, ignore_index=True)
     df['Timestamp'] = pd.to_datetime(df['Date'] + " " + df['Heure'], errors='coerce')
