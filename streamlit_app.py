@@ -7,7 +7,7 @@ from datetime import datetime
 from io import StringIO
 
 st.set_page_config(page_title="🚛 Press Dashboard", layout="wide")
-st.title("🚛 Press Cycle Dashboard")
+st.title("🚛 Press Cycle Dashboard!")
 
 # === SECRETS ===
 client_id = st.secrets["onedrive"]["client_id"]
@@ -51,7 +51,7 @@ if not csv_files:
     st.stop()
 
 # === LOAD CSVs SAFELY ===
-# @st.cache_data
+ @st.cache_data
 def load_csv_files():
     dfs = []
     skipped = []
