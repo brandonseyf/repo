@@ -34,22 +34,18 @@ if not access_token:
 
 headers = {"Authorization": f"Bearer {access_token}"}
 
-# === LIST FILES IN Press ===
-drive_url = f"https://graph.microsoft.com/v1.0/users/{user_email}/drive/root:/{folder_path}:/children"
-folder_resp = requests.get(drive_url, headers=headers)
-items = folder_resp.json().get("value", [])
+# === RECURSIVE SEARCH FOR CSV FILES ===
+st.write("🔍 Searching for CSV files in /Press (including subfolders)...")
+search_url = f"https://graph.microsoft.com/v1.0/users/{user_email}/drive/root:/{folder_path}:/search(q='.csv')"
+search_resp = requests.get(search_url, headers=headers)
+items = search_resp.json().get("value", [])
 
-# === SHOW ALL FOUND FILES ===
+# === SHOW FILES FOUND ===
 all_file_names = [item["name"] for item in items]
-st.write("📄 Files found in /Press folder:")
+st.write("📄 Found files:")
 st.write(all_file_names)
 
-# === FIXED CSV FILTER ===
-csv_files = [
-    item for item in items
-    if item["name"].strip().lower().endswith(".csv")
-]
-
+csv_files = [item for item in items if item["name"].strip().lower().endswith(".csv")]
 if not csv_files:
     st.warning("📂 No CSV files found in OneDrive folder.")
     st.stop()
