@@ -3,14 +3,11 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 from io import StringIO
 
+# === CONFIG ===
 st.set_page_config(page_title="🚛 Press Dashboard", layout="wide")
-try:
-    st.image("Logo.png", width=200)
-except Exception:
-    st.info("ℹ️ Logo not found, skipping logo.")
 st.title("🚛 Press Cycle Dashboard")
 
 # === LOAD SECRETS ===
@@ -18,6 +15,7 @@ client_id = st.secrets["onedrive"]["client_id"]
 tenant_id = st.secrets["onedrive"]["tenant_id"]
 client_secret = st.secrets["onedrive"]["client_secret"]
 folder_path = st.secrets["onedrive"]["folder_path"]
+user_email = "brandon@presfab.ca"
 
 # === AUTH ===
 auth_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
@@ -29,70 +27,66 @@ auth_data = {
 }
 auth_response = requests.post(auth_url, data=auth_data)
 access_token = auth_response.json().get("access_token")
+
 if not access_token:
-    st.error("❌ Authentication failed.")
+    st.error("❌ Authentication failed. Check credentials.")
     st.stop()
+
 headers = {"Authorization": f"Bearer {access_token}"}
 
-# === GET FILES ===
-drive_url = "https://graph.microsoft.com/v1.0/me/drive/root:/Press:/children"
-resp = requests.get(drive_url, headers=headers)
-items = resp.json().get("value", [])
-csv_files = [f for f in items if f['name'].lower().endswith(".csv")]
+# === LIST FILES IN Onedrive Root:/Press ===
+drive_url = f"https://graph.microsoft.com/v1.0/users/{user_email}/drive/root:/{folder_path}:/children"
+folder_resp = requests.get(drive_url, headers=headers)
+items = folder_resp.json().get("value", [])
 
+csv_files = [item for item in items if item["name"].endswith(".csv")]
 if not csv_files:
-    st.warning("📂 No CSV files found.")
+    st.warning("📂 No CSV files found in OneDrive folder.")
     st.stop()
 
 # === LOAD CSVs ===
-valid_dfs = []
-skipped = []
-
-with st.spinner("📥 Loading CSVs..."):
+@st.cache_data
+def load_csv_files():
+    dfs = []
     for file in csv_files:
-        name = file["name"]
-        try:
-            url = file["@microsoft.graph.downloadUrl"]
-            csv_text = requests.get(url).text
-            df = pd.read_csv(StringIO(csv_text))
-            df.columns = df.columns.str.strip()
+        download_url = file["@microsoft.graph.downloadUrl"]
+        csv_resp = requests.get(download_url)
+        if csv_resp.status_code == 200:
+            try:
+                df = pd.read_csv(StringIO(csv_resp.text))
+                df["source_file"] = file["name"]
+                dfs.append(df)
+            except Exception as e:
+                st.warning(f"⚠️ Failed to read {file['name']}: {e}")
+    return pd.concat(dfs, ignore_index=True)
 
-            if not {"Date", "Heure"}.issubset(df.columns):
-                skipped.append(f"{name} ❌ Missing Date or Heure")
-                continue
+with st.spinner("📥 Loading data from OneDrive..."):
+    df = load_csv_files()
 
-            df["source_file"] = name
-            df["Timestamp"] = pd.to_datetime(df["Date"].astype(str) + " " + df["Heure"].astype(str), errors='coerce')
-            df = df[df["Timestamp"].notna()]
-            df["Missing"] = ", ".join([col for col in ['Arrêt(secondes)', 'Épandage(secondes)', 'Cycle de presse(secondes)'] if col not in df.columns])
-            valid_dfs.append(df)
-
-        except Exception as e:
-            skipped.append(f"{name} ❌ {e}")
-
-if not valid_dfs:
-    st.error("❌ No usable data.")
+if df.empty:
+    st.warning("No data to display.")
     st.stop()
 
-df = pd.concat(valid_dfs, ignore_index=True)
+# === PROCESSING ===
+df['Timestamp'] = pd.to_datetime(df['Date'].astype(str) + ' ' + df['Heure'].astype(str), errors='coerce')
+df = df[df['Timestamp'].notna()]
+df = df[~((df['Timestamp'].dt.year == 2019) & (df['Timestamp'].dt.month == 11))]  # Remove Nov 2019
 
-# === Process Data ===
-df = df[~((df["Timestamp"].dt.year == 2019) & (df["Timestamp"].dt.month == 11))]
-df["Hour"] = df["Timestamp"].dt.hour
-df["DateOnly"] = df["Timestamp"].dt.date
-df["DayName"] = df["Timestamp"].dt.day_name()
-df["Machine"] = df["source_file"].str.extract(r'(Presse\d)', expand=False).replace({"Presse1": "400", "Presse2": "800"})
-df["AMPM"] = pd.Categorical(df["Hour"].apply(lambda h: "AM" if h < 13 else "PM"), categories=["AM", "PM"], ordered=True)
+df['Hour'] = df['Timestamp'].dt.hour
+df['DateOnly'] = df['Timestamp'].dt.date
+df['DayName'] = df['Timestamp'].dt.day_name()
+df['Machine'] = df['source_file'].str.extract(r'(Presse\d)', expand=False)
+df['Machine'] = df['Machine'].replace({'Presse1': '400', 'Presse2': '800'})
+df['AMPM'] = df['Hour'].apply(lambda h: 'AM' if h < 13 else 'PM')
 
-for col in ['Arrêt(secondes)', 'Épandage(secondes)', 'Cycle de presse(secondes)']:
-    if col in df.columns:
-        df[col] = pd.to_numeric(df[col], errors="coerce") / 60
+for col in ['Épandage(secondes)', 'Cycle de presse(secondes)', 'Arrêt(secondes)']:
+    df[col] = pd.to_numeric(df[col], errors='coerce') / 60
 
-# === Filters ===
-min_date = df["Timestamp"].dt.date.min()
-max_date = df["Timestamp"].dt.date.max()
-default_start = max_date - timedelta(days=6)
+min_date = df['Timestamp'].dt.date.min()
+max_date = df['Timestamp'].dt.date.max()
+default_start = max_date - pd.Timedelta(days=7)
 
+# === FILTERS ===
 with st.expander("🔍 Filters", expanded=True):
     col1, col2 = st.columns(2)
     with col1:
@@ -102,15 +96,15 @@ with st.expander("🔍 Filters", expanded=True):
     with col2:
         days = st.multiselect("📆 Days", ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'],
                               default=['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'])
-        show_raw = st.checkbox("👁 Show Raw Table", False)
+        show_raw = st.checkbox("👁 Show Raw Table", value=False)
 
 start_date, end_date = date_range
 filtered = df[
-    (df["Timestamp"].dt.date >= start_date) &
-    (df["Timestamp"].dt.date <= end_date) &
-    (df["Hour"].between(*shift_range)) &
-    (df["Machine"].isin(machines)) &
-    (df["DayName"].isin(days))
+    (df['Timestamp'].dt.date >= start_date) &
+    (df['Timestamp'].dt.date <= end_date) &
+    (df['Hour'].between(*shift_range)) &
+    (df['Machine'].isin(machines)) &
+    (df['DayName'].isin(days))
 ]
 
 st.markdown(f"### ✅ {len(filtered)} Cycles from {start_date} to {end_date}")
@@ -119,20 +113,25 @@ if filtered.empty:
     st.stop()
 
 # === KPIs ===
-start_ts = filtered["Timestamp"].min()
-end_ts = filtered["Timestamp"].max()
-duration_hours = max((end_ts - start_ts).total_seconds() / 3600, 1)
+start_ts = filtered['Timestamp'].min()
+end_ts = filtered['Timestamp'].max()
+duration_hours = (end_ts - start_ts).total_seconds() / 3600 if start_ts != end_ts else 1
+
 total_cycles = len(filtered)
 avg_per_hour = total_cycles / duration_hours
-avg_cycle = filtered['Cycle de presse(secondes)'].mean() if 'Cycle de presse(secondes)' in filtered else 0
+avg_cycle = filtered['Cycle de presse(secondes)'].mean()
+avg_spread = filtered['Épandage(secondes)'].mean()
+avg_down = filtered['Arrêt(secondes)'].mean()
 
 col1, col2, col3 = st.columns(3)
 col1.metric("🧮 Total Cycles", f"{total_cycles:,}")
 col2.metric("⚡ Cycles/Hour", f"{avg_per_hour:.1f}")
 col3.metric("⏱ Avg Cycle (min)", f"{avg_cycle:.1f}")
 
-# === Charts ===
+# === AM/PM STACKED BAR CHART ===
 st.subheader("📊 AM/PM Breakdown")
+filtered['AMPM'] = pd.Categorical(filtered['AMPM'], categories=['AM', 'PM'], ordered=True)
+
 if (end_date - start_date).days <= 1:
     grouped = filtered.groupby(['Hour', 'AMPM']).size().reset_index(name='Cycles')
     fig = px.bar(grouped, x='Hour', y='Cycles', color='AMPM', barmode='stack')
@@ -140,15 +139,13 @@ else:
     grouped = filtered.groupby([filtered['Timestamp'].dt.date, 'AMPM']).size().reset_index(name='Cycles')
     grouped.columns = ['Date', 'AMPM', 'Cycles']
     fig = px.bar(grouped, x='Date', y='Cycles', color='AMPM', barmode='stack')
+
 st.plotly_chart(fig, use_container_width=True)
 
+# === SHOW RAW TABLE ===
 if show_raw:
-    st.subheader("📄 Raw Data")
+    st.subheader("📄 Filtered Data")
     st.dataframe(filtered)
 
+# === EXPORT ===
 st.download_button("⬇️ Download Filtered CSV", filtered.to_csv(index=False), file_name="filtered_press_data.csv")
-
-if skipped:
-    with st.expander("⚠️ Skipped Files", expanded=False):
-        for s in skipped:
-            st.write("-", s)
