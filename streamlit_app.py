@@ -46,6 +46,10 @@ resp = requests.get(folder_url, headers=headers)
 items = resp.json().get("value", [])
 csv_files = [item for item in items if item["name"].strip().lower().endswith(".csv")]
 
+# Debug: Show all file names found
+st.subheader("📂 All CSV Files Detected in OneDrive")
+st.write([file['name'] for file in csv_files])
+
 if not csv_files:
     st.warning("📂 No CSV files found.")
     st.stop()
@@ -76,6 +80,15 @@ if not dfs:
     st.error("❌ No valid data loaded.")
     st.stop()
 
+# === Show loaded file info
+st.subheader("📋 Loaded Files and Row Counts")
+st.dataframe(pd.DataFrame(file_logs))
+
+# === Show skipped file info
+if skipped:
+    st.subheader("⚠️ Skipped Files")
+    st.dataframe(pd.DataFrame(skipped, columns=["File", "Error"]))
+
 # === COMBINE & CLEAN ===
 df = pd.concat(dfs, ignore_index=True)
 df['Timestamp'] = pd.to_datetime(df['Date'].astype(str) + ' ' + df['Heure'].astype(str), errors='coerce')
@@ -91,16 +104,7 @@ for col in ['Épandage(secondes)', 'Cycle de presse(secondes)', 'Arrêt(secondes
     if col in df.columns:
         df[col] = pd.to_numeric(df[col], errors='coerce') / 60
 
-# === LOG FILE STATS ===
-st.sidebar.subheader("📄 File Load Summary")
-if file_logs:
-    st.sidebar.dataframe(pd.DataFrame(file_logs))
-
-if skipped:
-    st.sidebar.subheader("⚠️ Skipped Files")
-    st.sidebar.dataframe(pd.DataFrame(skipped, columns=["File", "Error"]))
-
-# === FILTER UI ===
+# === FILTER ===
 min_date = df['Timestamp'].dt.date.min()
 max_date = df['Timestamp'].dt.date.max()
 default_start = max_date - pd.Timedelta(days=7)
