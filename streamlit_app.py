@@ -58,7 +58,22 @@ def load_data():
         return pd.DataFrame()
 
     combined = []
+    
+    # === ONLY LOAD NEW FILES + LAST FILE FOR EACH MACHINE ===
+    latest_by_machine = {}
     for f in files:
+        name = f["name"]
+        match = re.search(r"(Presse\d) (\d{4}-\d{2}-\d{2})", name)
+        if match:
+            machine, date_str = match.groups()
+            if machine not in latest_by_machine or date_str > latest_by_machine[machine][1]:
+                latest_by_machine[machine] = (f, date_str)
+
+    # Load new files + latest per machine
+    latest_files = set(f["name"] for f, _ in latest_by_machine.values())
+    for f in files:
+        if f["name"] in latest_files or not os.path.exists(DATA_FILE):
+
         try:
             r = requests.get(f["@microsoft.graph.downloadUrl"])
             df = pd.read_csv(StringIO(r.text))
