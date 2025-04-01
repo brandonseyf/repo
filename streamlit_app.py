@@ -82,6 +82,7 @@ def load_data():
     df['Machine'] = df['source_file'].str.extract(r'(Presse\d)', expand=False).replace({'Presse1': '400', 'Presse2': '800'})
     df['AMPM'] = df['Hour'].apply(lambda h: 'AM' if h < 13 else 'PM')
     df['Month'] = df['Timestamp'].dt.to_period('M').astype(str)
+    df['Date'] = df['Timestamp'].dt.date
 
     for col in ['Épandage(secondes)', 'Cycle de presse(secondes)', 'Arrêt(secondes)']:
         if col in df.columns:
@@ -108,10 +109,9 @@ def filter_range(df, start, end):
 
 def kpi_block(data, label):
     total = len(data)
-    col_names = data.columns
-    avg_cycle = data['Cycle de presse(secondes)'].mean() if 'Cycle de presse(secondes)' in col_names else 0
-    avg_spread = data['Épandage(secondes)'].mean() if 'Épandage(secondes)' in col_names else 0
-    avg_down = data['Arrêt(secondes)'].mean() if 'Arrêt(secondes)' in col_names else 0
+    avg_cycle = data['Cycle de presse(secondes)'].mean() if 'Cycle de presse(secondes)' in data.columns else 0
+    avg_spread = data['Épandage(secondes)'].mean() if 'Épandage(secondes)' in data.columns else 0
+    avg_down = data['Arrêt(secondes)'].mean() if 'Arrêt(secondes)' in data.columns else 0
     hours = data.groupby('DateOnly')['Timestamp'].agg(lambda x: (x.max()-x.min()).total_seconds()/3600)
     avg_prod = hours.mean() if not hours.empty else 0
 
@@ -136,7 +136,7 @@ kpi_block(filter_range(df, this_month_start, today), "This Month")
 # === AM/PM STACKED CHART ===
 st.markdown("---")
 st.subheader("🌗 AM/PM Breakdown")
-grouped = df.groupby([df['Timestamp'].dt.date, 'AMPM']).size().reset_index(name='Cycles')
+grouped = df.groupby(['Date', 'AMPM']).size().reset_index(name='Cycles')
 fig = px.bar(grouped, x='Date', y='Cycles', color='AMPM', barmode='stack', title="Cycles by Day (AM/PM)", text='Cycles')
 fig.update_traces(textposition='inside')
 st.plotly_chart(fig, use_container_width=True)
