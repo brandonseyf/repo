@@ -71,8 +71,19 @@ def load_data():
 
     # Load new files + latest per machine
     latest_files = set(f["name"] for f, _ in latest_by_machine.values())
-    for f in files:
-        if f["name"] in latest_files or not os.path.exists(DATA_FILE):
+    
+for f in files:
+    if f["name"] in latest_files or not os.path.exists(DATA_FILE):
+        try:
+            r = requests.get(f["@microsoft.graph.downloadUrl"])
+            df = pd.read_csv(StringIO(r.text))
+            if "Date" not in df or "Heure" not in df:
+                continue
+            df["source_file"] = f["name"]
+            combined.append(df)
+        except:
+            continue
+
 
         try:
             r = requests.get(f["@microsoft.graph.downloadUrl"])
