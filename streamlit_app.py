@@ -65,13 +65,12 @@ def load_csv_files():
     for file in csv_files:
         download_url = file["@microsoft.graph.downloadUrl"]
         csv_resp = requests.get(download_url)
-        if csv_resp.status_code == 200:
-            try:
-                df = pd.read_csv(StringIO(csv_resp.text))
-                df["source_file"] = file["name"]
-                dfs.append(df)
-            except Exception as e:
-                st.warning(f"⚠️ Could not read {file['name']}: {e}")
+        try:
+            df = pd.read_csv(StringIO(csv_resp.text))
+        except UnicodeDecodeError:
+            df = pd.read_csv(StringIO(csv_resp.content.decode("ISO-8859-1")))
+        df["source_file"] = file["name"]
+        dfs.append(df)
     return pd.concat(dfs, ignore_index=True)
 
 with st.spinner("📥 Loading data from OneDrive..."):
@@ -95,14 +94,12 @@ df['AMPM'] = df['Hour'].apply(lambda h: 'AM' if h < 13 else 'PM')
 
 expected_cols = ['Épandage(secondes)', 'Cycle de presse(secondes)', 'Arrêt(secondes)']
 available_cols = [col for col in expected_cols if col in df.columns]
-
 if not available_cols:
     st.error("❌ None of the expected data columns were found in the CSVs.")
     st.stop()
 
 for col in available_cols:
     df[col] = pd.to_numeric(df[col], errors='coerce') / 60
-
 
 min_date = df['Timestamp'].dt.date.min()
 max_date = df['Timestamp'].dt.date.max()
