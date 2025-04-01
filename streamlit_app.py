@@ -9,7 +9,7 @@ from io import StringIO
 
 # === CONFIG ===
 st.set_page_config(page_title="🚛 Press Dashboard!", layout="wide")
-st.title("🚛 Press Cycle Dashboard (Smart Cache)")
+st.title("🚛 Press Cycle Dashboard! (Smart Cache)")
 
 client_id = st.secrets["onedrive"]["client_id"]
 tenant_id = st.secrets["onedrive"]["tenant_id"]
