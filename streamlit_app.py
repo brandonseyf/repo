@@ -1,15 +1,22 @@
 
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 import requests
+import os
+import json
 from datetime import datetime
 from io import StringIO
+from hashlib import md5
 
-st.set_page_config(page_title="🚛 Press Dashboard", layout="wide")
-st.title("🚛 Press Cycle Dashboard")
+st.set_page_config(page_title="🚛 Optimized Press Dashboard", layout="wide")
+st.title("🚛 Press Dashboard (OneDrive Optimized)")
 
-# === LOAD SECRETS ===
+# === CONFIG ===
+CACHE_DIR = ".streamlit_cache"
+os.makedirs(CACHE_DIR, exist_ok=True)
+INDEX_FILE = os.path.join(CACHE_DIR, "file_index.json")
+DATA_FILE = os.path.join(CACHE_DIR, "combined_data.parquet")
+
 client_id = st.secrets["onedrive"]["client_id"]
 tenant_id = st.secrets["onedrive"]["tenant_id"]
 client_secret = st.secrets["onedrive"]["client_secret"]
@@ -17,82 +24,103 @@ user_email = "brandon@presfab.ca"
 folder_path = "Press"
 
 # === AUTH ===
-auth_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
-auth_data = {
-    "grant_type": "client_credentials",
-    "client_id": client_id,
-    "client_secret": client_secret,
-    "scope": "https://graph.microsoft.com/.default"
-}
-auth_response = requests.post(auth_url, data=auth_data)
-access_token = auth_response.json().get("access_token")
+def get_access_token():
+    url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+    data = {
+        "grant_type": "client_credentials",
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "scope": "https://graph.microsoft.com/.default"
+    }
+    r = requests.post(url, data=data)
+    return r.json().get("access_token")
 
-if not access_token:
-    st.error("❌ Authentication failed.")
+token = get_access_token()
+if not token:
+    st.error("❌ Failed to authenticate with Microsoft Graph.")
     st.stop()
 
-headers = {"Authorization": f"Bearer {access_token}"}
+headers = {"Authorization": f"Bearer {token}"}
 
-# === GET DRIVE ID ===
-drive_resp = requests.get(f"https://graph.microsoft.com/v1.0/users/{user_email}/drive", headers=headers)
-drive_id = drive_resp.json().get("id")
-if not drive_id:
-    st.error("❌ Could not get user drive ID.")
+# === PAGINATED FILE FETCH ===
+@st.cache_data(show_spinner=False)
+def get_all_files():
+    url = f"https://graph.microsoft.com/v1.0/users/{user_email}/drive/root:/{folder_path}:/children"
+    all_files = []
+    while url:
+        r = requests.get(url, headers=headers)
+        if r.status_code != 200:
+            break
+        data = r.json()
+        all_files.extend(data.get("value", []))
+        url = data.get("@odata.nextLink")
+    return all_files
+
+# === LOAD FILE INDEX ===
+def load_index():
+    if os.path.exists(INDEX_FILE):
+        with open(INDEX_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+# === SAVE FILE INDEX ===
+def save_index(index):
+    with open(INDEX_FILE, "w") as f:
+        json.dump(index, f)
+
+# === HASH TO DETECT CHANGES ===
+def file_hash(metadata):
+    return f"{metadata['size']}_{metadata['lastModifiedDateTime']}"
+
+# === PROCESS NEW OR CHANGED FILES ===
+@st.cache_data(show_spinner=False)
+def update_data():
+    files = get_all_files()
+    csvs = [f for f in files if f["name"].strip().lower().endswith(".csv")]
+    old_index = load_index()
+    new_index = {}
+    new_data = []
+
+    for f in csvs:
+        fname = f["name"].strip()
+        fid = f["id"]
+        meta_hash = file_hash(f)
+        new_index[fname] = meta_hash
+        if fname not in old_index or old_index[fname] != meta_hash:
+            download_url = f["@microsoft.graph.downloadUrl"]
+            try:
+                try:
+                    df = pd.read_csv(StringIO(requests.get(download_url).text))
+                except:
+                    df = pd.read_csv(StringIO(requests.get(download_url).content.decode("latin1")))
+                if "Date" in df.columns and "Heure" in df.columns:
+                    df["source_file"] = fname
+                    new_data.append(df)
+            except Exception as e:
+                print(f"Failed to load {fname}: {e}")
+
+    if os.path.exists(DATA_FILE):
+        base = pd.read_parquet(DATA_FILE)
+        combined = pd.concat([base] + new_data, ignore_index=True)
+    else:
+        combined = pd.concat(new_data, ignore_index=True) if new_data else pd.DataFrame()
+
+    combined.to_parquet(DATA_FILE, index=False)
+    save_index(new_index)
+    return combined
+
+# === LOAD OR UPDATE DATA ===
+with st.spinner("📥 Loading & caching press data..."):
+    df = update_data()
+
+if df.empty:
+    st.warning("⚠️ No valid data loaded.")
     st.stop()
 
-# === LIST FILES IN FOLDER ===
-folder_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/{folder_path}:/children"
-resp = requests.get(folder_url, headers=headers)
-items = resp.json().get("value", [])
-csv_files = [item for item in items if item["name"].strip().lower().endswith(".csv")]
-
-# Debug: Show all file names found
-st.subheader("📂 All CSV Files Detected in OneDrive")
-st.write([file['name'] for file in csv_files])
-
-if not csv_files:
-    st.warning("📂 No CSV files found.")
-    st.stop()
-
-# === LOAD CSV FILES ===
-dfs = []
-skipped = []
-file_logs = []
-
-for file in csv_files:
-    name = file["name"].strip()
-    url = file["@microsoft.graph.downloadUrl"]
-    try:
-        try:
-            df = pd.read_csv(StringIO(requests.get(url).text))
-        except:
-            df = pd.read_csv(StringIO(requests.get(url).content.decode("latin1")))
-        if "Date" not in df.columns or "Heure" not in df.columns:
-            skipped.append((name, "Missing Date or Heure"))
-            continue
-        df["source_file"] = name
-        dfs.append(df)
-        file_logs.append({"File": name, "Rows": len(df)})
-    except Exception as e:
-        skipped.append((name, str(e)))
-
-if not dfs:
-    st.error("❌ No valid data loaded.")
-    st.stop()
-
-# === Show loaded file info
-st.subheader("📋 Loaded Files and Row Counts")
-st.dataframe(pd.DataFrame(file_logs))
-
-# === Show skipped file info
-if skipped:
-    st.subheader("⚠️ Skipped Files")
-    st.dataframe(pd.DataFrame(skipped, columns=["File", "Error"]))
-
-# === COMBINE & CLEAN ===
-df = pd.concat(dfs, ignore_index=True)
+# === CLEANING ===
 df['Timestamp'] = pd.to_datetime(df['Date'].astype(str) + ' ' + df['Heure'].astype(str), errors='coerce')
 df = df[df['Timestamp'].notna()]
+df = df[~((df['Timestamp'].dt.year == 2019) & (df['Timestamp'].dt.month == 11))]
 df['Hour'] = df['Timestamp'].dt.hour
 df['DateOnly'] = df['Timestamp'].dt.date
 df['DayName'] = df['Timestamp'].dt.day_name()
@@ -104,7 +132,7 @@ for col in ['Épandage(secondes)', 'Cycle de presse(secondes)', 'Arrêt(secondes
     if col in df.columns:
         df[col] = pd.to_numeric(df[col], errors='coerce') / 60
 
-# === FILTER ===
+# === UI ===
 min_date = df['Timestamp'].dt.date.min()
 max_date = df['Timestamp'].dt.date.max()
 default_start = max_date - pd.Timedelta(days=7)
@@ -150,16 +178,11 @@ col3.metric("⏱ Avg Cycle (min)", f"{avg_cycle:.1f}")
 
 # === CHART ===
 st.subheader("📊 AM/PM Breakdown")
-filtered.loc[:, 'AMPM'] = pd.Categorical(filtered['AMPM'], categories=['AM', 'PM'], ordered=True)
+filtered['AMPM'] = pd.Categorical(filtered['AMPM'], categories=['AM', 'PM'], ordered=True)
 
-if (end_date - start_date).days <= 1:
-    grouped = filtered.groupby(['Hour', 'AMPM']).size().reset_index(name='Cycles')
-    fig = px.bar(grouped, x='Hour', y='Cycles', color='AMPM', barmode='stack')
-else:
-    grouped = filtered.groupby([filtered['Timestamp'].dt.date, 'AMPM']).size().reset_index(name='Cycles')
-    grouped.columns = ['Date', 'AMPM', 'Cycles']
-    fig = px.bar(grouped, x='Date', y='Cycles', color='AMPM', barmode='stack')
-
+grouped = filtered.groupby([filtered['Timestamp'].dt.date, 'AMPM']).size().reset_index(name='Cycles')
+grouped.columns = ['Date', 'AMPM', 'Cycles']
+fig = px.bar(grouped, x='Date', y='Cycles', color='AMPM', barmode='stack')
 st.plotly_chart(fig, use_container_width=True)
 
 if show_raw:
