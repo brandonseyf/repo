@@ -80,6 +80,8 @@ with st.spinner("📥 Loading data from OneDrive..."):
 if df.empty:
     st.warning("No valid data found.")
     st.stop()
+st.write("🕓 Date range in data:", df["Timestamp"].min(), "to", df["Timestamp"].max())
+st.write("📁 Loaded files:", df["source_file"].unique().tolist())
 
 # === CLEAN & PROCESS ===
 df['Timestamp'] = pd.to_datetime(df['Date'].astype(str) + ' ' + df['Heure'].astype(str), errors='coerce')
